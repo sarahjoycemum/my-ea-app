@@ -1,0 +1,592 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EA Command Center</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,500;0,9..40,600;0,9..40,700;0,9..40,800&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'DM Sans', 'Segoe UI', sans-serif; }
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: rgba(124,58,237,0.05); }
+  ::-webkit-scrollbar-thumb { background: rgba(124,58,237,0.25); border-radius: 3px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+  textarea:focus { border-color: rgba(124,58,237,0.5) !important; box-shadow: 0 0 0 3px rgba(124,58,237,0.15); }
+  button:hover:not(:disabled) { transform: translateY(-1px); filter: brightness(1.1); }
+  button:active:not(:disabled) { transform: translateY(0); }
+  button { transition: all 0.15s ease; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useCallback, useRef } = React;
+
+const PHASE_1_PROMPT = `You are an Executive Assistant's daily organizer. I will paste my raw, unstructured morning notes below. These notes are a mix of WhatsApp messages, voice note transcripts, Loom summaries, calendar items, purchase requests, email flags, finance alerts, reminder statuses, and my own scattered thoughts. They may be messy, duplicated, or out of order.
+
+Your job is to organize them into the Phase 1 Update format below. Follow these rules strictly:
+
+SECTIONS:
+
+1. SUMMARY — 2–3 sentences max. Confirm you understood his overnight messages. Mention specific items so he knows you saw them. If there are process changes or context quotes from him, weave them into the summary — do not create separate sections for them.
+
+2. APPOINTMENTS / CALENDAR — Anything involving a date, time, delivery, flight, or scheduled event goes here. Always. Group by: Today, Tomorrow, Day After Tomorrow, and then any future dates. Mark new items with "New:" so he can spot changes immediately. Include delivery ETAs and travel schedules.
+
+3. ACTION ITEMS — Organize into these sub-sections:
+   - Key Directive: The main focus or shift he's asking for. One line per item. If none, skip.
+   - Today - Urgent: Must-do today. Anything with a same-day deadline, money impact, or time constraint. If a new calendar entry needs to be added, include it here too.
+   - This Week - Deadlines: Items with specific due dates this week.
+   - Standing Deliverables Today: Recurring or expected daily outputs.
+   - Paused / Canceled: Anything he deprioritized or put on hold. If none, skip.
+
+4. QUESTIONS / CLARIFICATIONS — Anything I need answered to proceed. If none, write "None today."
+
+5. ROADBLOCKS — Anything blocking progress or likely to cause delays. If none, write "None today."
+
+6. CHECK-IN — Optional. Only include if there's a decision I would move forward on without his input after a certain time. Format: "If no response by [time], I will [action]." If not needed, skip entirely.
+
+WRITING RULES:
+- Summarize, do not narrate. Short sentences. No filler words.
+- Lead with the point. Cut "I will be looking into" → "Looking into." Cut "I wanted to let you know that" → state the fact.
+- One bullet = one idea. No stacking multiple thoughts in a single bullet.
+- No explanations unless he needs them to make a decision.
+- If it can be said in 5 words, do not use 15.
+
+FORMATTING RULES:
+- No markdown headers (no #). Use bold text for section titles.
+- Use bullet points for lists.
+- Calendar items should use → arrows between events on the same day.
+- Do not duplicate items across sections. Each item appears once in its most relevant section.
+- If an item is schedule-related AND requires action, put the schedule detail in Appointments/Calendar and the action in Action Items.
+- Do not add items I didn't mention. Do not infer tasks that aren't in my notes.
+- If something is unclear, flag it under Questions/Clarifications rather than guessing.
+
+MY RAW NOTES:
+`;
+
+const EOD_PROMPT = `You are an Executive Assistant's end-of-day organizer. I will paste my raw notes from today below. These notes may include completed tasks, partial progress, things that took longer than expected, blockers, and my plan for tomorrow. They may be messy or out of order.
+
+Your job is to organize them into the End of Day Update format below. Follow these rules strictly:
+
+SECTIONS:
+
+1. COMPLETED TODAY — Everything that got done today. One line per item. Lead with the verb: "Booked," "Uploaded," "Researched," "Confirmed." Group related items together if it helps readability.
+
+2. TIME HIGHLIGHT — One or two lines only. What took the most time today and why.
+
+3. IN PROGRESS — Items started but not finished. For each one, state where it stands and when it resumes.
+
+4. CHALLENGES / BLOCKERS — Anything that slowed progress, needs Tim's input, or may require him to readjust priorities. If none, write "None today."
+
+5. TOMORROW'S TOP 3 — The three highest-priority items queued for tomorrow. Numbered 1–3.
+
+WRITING RULES:
+- Summarize, do not narrate. Short sentences. No filler words.
+- Lead with the point. "Booked 3 flights" not "I was able to successfully book 3 flights today."
+- One bullet = one idea.
+- If it can be said in 5 words, do not use 15.
+
+FORMATTING RULES:
+- No markdown headers (no #). Use bold text for section titles.
+- Use bullet points for lists.
+- Do not duplicate items across sections.
+- Do not add items I didn't mention. Do not infer tasks that aren't in my notes.
+
+MY RAW NOTES:
+`;
+
+const ACTION_EXTRACT_PROMPT = `Extract all action items from this Phase 1 Update. For each item, determine if it belongs to:
+- "today" — urgent, same-day deadline, time-sensitive
+- "this_week" — has a deadline within the next 7 days
+- "standing" — recurring daily deliverable or ongoing responsibility
+
+Return ONLY valid JSON. No markdown, no backticks, no explanation. Just the JSON array:
+[{"text": "action item text", "group": "today|this_week|standing"}]
+
+Phase 1 Update:
+`;
+
+const PHASES = [
+  { id: 1, label: "Phase 1", name: "Capture & Triage", time: "8:00–9:00 AM", startHour: 8, endHour: 9, color: "#EAB308",
+    steps: ["Check WhatsApp — All Threads", "Paste Everything to Notepad", "Process Voice Notes & Loom Videos", "Scan Systems (Calendar, Purchases, Email, Finance, Reminders)", "Merge & Prioritize", "Send Phase 1 Update"] },
+  { id: 2, label: "Phase 2", name: "Urgent Execution", time: "9:00–10:00 AM", startHour: 9, endHour: 10, color: "#EF4444",
+    steps: ["Wait for executive response to Phase 1", "Adjust priorities based on feedback", "Execute urgent tasks (bookings, calls, time-sensitive research)", "Send Phase 2 Update (if applicable)"] },
+  { id: 3, label: "Phase 3", name: "Deep Work — Existing", time: "10:00 AM–12:00 PM", startHour: 10, endHour: 12, color: "#22C55E",
+    steps: ["Transcribe educational materials to Notion", "Continue ongoing research", "Work through non-urgent tasks and projects", "Confirm completion and next steps", "Send Mid-Day Update"] },
+  { id: "lunch", label: "Lunch", name: "Break", time: "12:00–1:00 PM", startHour: 12, endHour: 13, color: "#A16207",
+    steps: ["Step away — real break", "No admin unless critical"] },
+  { id: 4, label: "Phase 4", name: "Flex Execution", time: "1:00–3:00 PM", startHour: 13, endHour: 15, color: "#A855F7",
+    steps: ["Calls and follow-ups", "Handle last-minute changes", "Family or logistics items", "Light admin (attach receipts)", "Process late WhatsApp materials", "Notion & Calendar Housekeeping"] },
+  { id: 5, label: "Phase 5", name: "Buffer — Catch-Up", time: "3:00–4:00 PM", startHour: 15, endHour: 16, color: "#F97316",
+    steps: ["Chase outstanding replies", "Prep items for tomorrow", "Spillover tasks", "Organize files and receipts", "Non-urgent research"] },
+  { id: 6, label: "Phase 6", name: "End-of-Day Wrap", time: "4:00–5:00 PM", startHour: 16, endHour: 17, color: "#1F2937",
+    steps: ["Final WhatsApp check (add to tomorrow, do NOT execute)", "Update ROADBLOCKS", "Set NEXT CHECK dates for pending items", "Draft tomorrow's top priorities", "Count materials processed today", "Flag backlog for tomorrow's Phase 3", "Send End of Day Update"] }
+];
+
+const WEEKLY_RITUALS = {
+  1: { name: "Week Planning", time: "Mon 08:00–08:15", steps: ["Review last week's unfinished tasks", "Check upcoming deadlines", "Estimate WhatsApp backlog", "Block special time needs"] },
+  3: { name: "Database Hygiene", time: "Wed 15:00–15:30", steps: ["Open WhatsApp Educational DB — All Items view", "Check last 10 entries for missing fields", "Fix issues and check duplicates"] },
+  5: { name: "Weekly Review", time: "Fri 15:00–16:00", steps: ["Backlog sweep", "Quality audit (3 random entries)", "Metrics — count entries, note issues", "SOP review — note improvements"] }
+};
+
+function getCurrentPhaseIndex() {
+  const h = new Date().getHours();
+  const idx = PHASES.findIndex(p => h >= p.startHour && h < p.endHour);
+  return idx >= 0 ? idx : (h < 8 ? 0 : PHASES.length - 1);
+}
+
+function CircularProgress({ value, size = 52, stroke = 4, color = "#7C3AED" }) {
+  const r = (size - stroke) / 2, circ = 2 * Math.PI * r;
+  return (
+    <svg width={size} height={size} style={{ transform: "rotate(-90deg)" }}>
+      <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="rgba(124,58,237,0.12)" strokeWidth={stroke} />
+      <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={color} strokeWidth={stroke} strokeDasharray={circ} strokeDashoffset={circ - (value/100)*circ} strokeLinecap="round" style={{ transition: "stroke-dashoffset 0.5s ease" }} />
+    </svg>
+  );
+}
+
+function CloudDecor() {
+  return (
+    <svg viewBox="0 0 400 80" style={{ width: "100%", height: 80, opacity: 0.08, position: "absolute", bottom: 0, left: 0 }}>
+      <ellipse cx="60" cy="65" rx="55" ry="25" fill="#7C3AED" /><ellipse cx="140" cy="58" rx="70" ry="30" fill="#7C3AED" />
+      <ellipse cx="250" cy="62" rx="60" ry="22" fill="#7C3AED" /><ellipse cx="340" cy="55" rx="75" ry="28" fill="#7C3AED" />
+      <ellipse cx="100" cy="50" rx="40" ry="18" fill="#A78BFA" /><ellipse cx="300" cy="48" rx="45" ry="20" fill="#A78BFA" />
+    </svg>
+  );
+}
+
+function CopyBtn({ text }) {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => { try { await navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 2000); } catch {} };
+  return <button onClick={copy} style={{ padding: "6px 14px", borderRadius: 8, border: "none", background: copied ? "#22C55E" : "#7C3AED", color: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", gap: 5 }}>{copied ? "✓ Copied" : "📋 Copy"}</button>;
+}
+
+function SettingsModal({ show, onClose, apiKey, setApiKey, notionToken, setNotionToken, notionParent, setNotionParent }) {
+  if (!show) return null;
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", backdropFilter: "blur(4px)" }} onClick={onClose}>
+      <div onClick={e => e.stopPropagation()} style={{ background: "#1E1040", border: "1px solid rgba(124,58,237,0.3)", borderRadius: 20, padding: 28, width: "90%", maxWidth: 460, animation: "fadeIn 0.2s ease" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+          <h2 style={{ fontSize: 18, fontWeight: 700, color: "#C4B5FD" }}>⚙️ Settings</h2>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: "#8B7DAF", fontSize: 22, cursor: "pointer" }}>✕</button>
+        </div>
+        <div style={{ marginBottom: 18 }}>
+          <label style={{ fontSize: 12, fontWeight: 700, color: "#A78BFA", textTransform: "uppercase", letterSpacing: "0.8px", display: "block", marginBottom: 6 }}>Anthropic API Key</label>
+          <input type="password" value={apiKey} onChange={e => { setApiKey(e.target.value); localStorage.setItem("ea_anthropic_key", e.target.value); }} placeholder="sk-ant-..." style={{ width: "100%", padding: "10px 14px", borderRadius: 10, border: "1px solid rgba(124,58,237,0.3)", background: "rgba(0,0,0,0.3)", color: "#E8E0F5", fontSize: 13, fontFamily: "monospace", outline: "none", boxSizing: "border-box" }} />
+          <p style={{ fontSize: 11, color: "#6B5F8A", marginTop: 4 }}>Powers the Summarize buttons. Get one at console.anthropic.com</p>
+        </div>
+        <div style={{ marginBottom: 18 }}>
+          <label style={{ fontSize: 12, fontWeight: 700, color: "#A78BFA", textTransform: "uppercase", letterSpacing: "0.8px", display: "block", marginBottom: 6 }}>Notion Integration Token</label>
+          <input type="password" value={notionToken} onChange={e => { setNotionToken(e.target.value); localStorage.setItem("ea_notion_token", e.target.value); }} placeholder="ntn_..." style={{ width: "100%", padding: "10px 14px", borderRadius: 10, border: "1px solid rgba(124,58,237,0.3)", background: "rgba(0,0,0,0.3)", color: "#E8E0F5", fontSize: 13, fontFamily: "monospace", outline: "none", boxSizing: "border-box" }} />
+          <p style={{ fontSize: 11, color: "#6B5F8A", marginTop: 4 }}>Powers Create Daily Log. Create at notion.so/my-integrations</p>
+        </div>
+        <div style={{ marginBottom: 18 }}>
+          <label style={{ fontSize: 12, fontWeight: 700, color: "#A78BFA", textTransform: "uppercase", letterSpacing: "0.8px", display: "block", marginBottom: 6 }}>Notion Parent Page ID</label>
+          <input type="text" value={notionParent} onChange={e => { setNotionParent(e.target.value); localStorage.setItem("ea_notion_parent", e.target.value); }} placeholder="abc123..." style={{ width: "100%", padding: "10px 14px", borderRadius: 10, border: "1px solid rgba(124,58,237,0.3)", background: "rgba(0,0,0,0.3)", color: "#E8E0F5", fontSize: 13, fontFamily: "monospace", outline: "none", boxSizing: "border-box" }} />
+          <p style={{ fontSize: 11, color: "#6B5F8A", marginTop: 4 }}>Page ID where daily logs will be created. Copy from the Notion page URL.</p>
+        </div>
+        <div style={{ padding: 12, borderRadius: 10, background: "rgba(34,197,94,0.1)", border: "1px solid rgba(34,197,94,0.2)" }}>
+          <p style={{ fontSize: 12, color: "#86EFAC" }}>🔒 Keys are stored locally in your browser only. Never sent anywhere except directly to the APIs.</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function App() {
+  const [completedSteps, setCompletedSteps] = useState(() => { try { return JSON.parse(localStorage.getItem("ea_steps_" + new Date().toDateString()) || "{}"); } catch { return {}; } });
+  const [expandedPhase, setExpandedPhase] = useState(null);
+  const [phase1Notes, setPhase1Notes] = useState("");
+  const [phase1Summary, setPhase1Summary] = useState("");
+  const [phase6Notes, setPhase6Notes] = useState("");
+  const [phase6Summary, setPhase6Summary] = useState("");
+  const [actionItems, setActionItems] = useState([]);
+  const [checkedActions, setCheckedActions] = useState({});
+  const [loading, setLoading] = useState({ phase1: false, phase6: false, actions: false, notion: false, eod: false });
+  const [activeTab, setActiveTab] = useState("tracker");
+  const [dailyLogUrl, setDailyLogUrl] = useState(null);
+  const [dailyLogPageId, setDailyLogPageId] = useState(null);
+  const [eodAppended, setEodAppended] = useState(false);
+  const [statusMsg, setStatusMsg] = useState("");
+  const [ritualSteps, setRitualSteps] = useState({});
+  const [showSettings, setShowSettings] = useState(false);
+  const [apiKey, setApiKey] = useState(() => localStorage.getItem("ea_anthropic_key") || "");
+  const [notionToken, setNotionToken] = useState(() => localStorage.getItem("ea_notion_token") || "");
+  const [notionParent, setNotionParent] = useState(() => localStorage.getItem("ea_notion_parent") || "");
+
+  const now = new Date();
+  const dayOfWeek = now.getDay();
+  const currentPhaseIdx = getCurrentPhaseIndex();
+  const dateStr = now.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+  const ddmmm = `${String(now.getDate()).padStart(2, "0")}${now.toLocaleString("en-US", { month: "short" }).toUpperCase()}`;
+
+  useEffect(() => {
+    localStorage.setItem("ea_steps_" + new Date().toDateString(), JSON.stringify(completedSteps));
+  }, [completedSteps]);
+
+  const totalSteps = PHASES.reduce((a, p) => a + p.steps.length, 0);
+  const doneSteps = Object.values(completedSteps).filter(Boolean).length;
+  const overallProgress = totalSteps > 0 ? Math.round((doneSteps / totalSteps) * 100) : 0;
+
+  const toggleStep = (phaseId, stepIdx) => {
+    const key = `${phaseId}-${stepIdx}`;
+    setCompletedSteps(prev => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  const phaseProgress = (phase) => {
+    const done = phase.steps.filter((_, i) => completedSteps[`${phase.id}-${i}`]).length;
+    return phase.steps.length > 0 ? Math.round((done / phase.steps.length) * 100) : 0;
+  };
+
+  const callClaude = async (prompt, notes) => {
+    if (!apiKey) { setStatusMsg("⚠️ Add your Anthropic API key in Settings first."); setShowSettings(true); return null; }
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
+      body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 2000, messages: [{ role: "user", content: prompt + notes }] })
+    });
+    if (!response.ok) { const err = await response.text(); throw new Error(`API error: ${response.status} - ${err}`); }
+    const data = await response.json();
+    return data.content?.map(b => b.text || "").join("\n") || "No response.";
+  };
+
+  const handleSummarize = async (type) => {
+    const isPhase1 = type === "phase1";
+    const notes = isPhase1 ? phase1Notes : phase6Notes;
+    if (!notes.trim()) return;
+    setLoading(prev => ({ ...prev, [type]: true }));
+    setStatusMsg("");
+    try {
+      const prompt = isPhase1 ? PHASE_1_PROMPT : EOD_PROMPT;
+      const result = await callClaude(prompt, notes);
+      if (!result) { setLoading(prev => ({ ...prev, [type]: false })); return; }
+      if (isPhase1) {
+        setPhase1Summary(result);
+        setLoading(prev => ({ ...prev, actions: true }));
+        try {
+          const actResult = await callClaude(ACTION_EXTRACT_PROMPT, result);
+          if (actResult) {
+            const clean = actResult.replace(/```json|```/g, "").trim();
+            setActionItems(JSON.parse(clean));
+          }
+        } catch { setActionItems([]); }
+        setLoading(prev => ({ ...prev, actions: false }));
+      } else {
+        setPhase6Summary(result);
+      }
+    } catch (e) { setStatusMsg("❌ " + e.message); }
+    setLoading(prev => ({ ...prev, [type]: false }));
+  };
+
+  const createNotionPage = async (title, content) => {
+    if (!notionToken) { setStatusMsg("⚠️ Add your Notion token in Settings first."); setShowSettings(true); return null; }
+    const body = {
+      parent: notionParent ? { page_id: notionParent } : undefined,
+      properties: { title: { title: [{ text: { content: title } }] } },
+      children: content.split("\n").filter(l => l.trim()).map(line => {
+        const trimmed = line.trim();
+        if (trimmed.startsWith("## ")) {
+          return { object: "block", type: "heading_2", heading_2: { rich_text: [{ text: { content: trimmed.replace("## ", "") } }] } };
+        }
+        if (trimmed.startsWith("- [ ] ")) {
+          return { object: "block", type: "to_do", to_do: { rich_text: [{ text: { content: trimmed.replace("- [ ] ", "") } }], checked: false } };
+        }
+        if (trimmed.startsWith("- ")) {
+          return { object: "block", type: "bulleted_list_item", bulleted_list_item: { rich_text: [{ text: { content: trimmed.replace("- ", "") } }] } };
+        }
+        if (trimmed.startsWith("**") && trimmed.endsWith("**")) {
+          return { object: "block", type: "paragraph", paragraph: { rich_text: [{ text: { content: trimmed.replace(/\*\*/g, "") }, annotations: { bold: true } }] } };
+        }
+        return { object: "block", type: "paragraph", paragraph: { rich_text: [{ text: { content: trimmed } }] } };
+      })
+    };
+    const res = await fetch("https://api.notion.com/v1/pages", {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${notionToken}`, "Content-Type": "application/json", "Notion-Version": "2022-06-28" },
+      body: JSON.stringify(body)
+    });
+    if (!res.ok) { const err = await res.text(); throw new Error(`Notion error: ${res.status} - ${err}`); }
+    return await res.json();
+  };
+
+  const appendToNotionPage = async (pageId, content) => {
+    const children = content.split("\n").filter(l => l.trim()).map(line => {
+      const trimmed = line.trim();
+      if (trimmed.startsWith("## ")) return { object: "block", type: "heading_2", heading_2: { rich_text: [{ text: { content: trimmed.replace("## ", "") } }] } };
+      if (trimmed.startsWith("- ")) return { object: "block", type: "bulleted_list_item", bulleted_list_item: { rich_text: [{ text: { content: trimmed.replace("- ", "") } }] } };
+      if (trimmed.startsWith("**") && trimmed.endsWith("**")) return { object: "block", type: "paragraph", paragraph: { rich_text: [{ text: { content: trimmed.replace(/\*\*/g, "") }, annotations: { bold: true } }] } };
+      return { object: "block", type: "paragraph", paragraph: { rich_text: [{ text: { content: trimmed } }] } };
+    });
+    const res = await fetch(`https://api.notion.com/v1/blocks/${pageId}/children`, {
+      method: "PATCH",
+      headers: { "Authorization": `Bearer ${notionToken}`, "Content-Type": "application/json", "Notion-Version": "2022-06-28" },
+      body: JSON.stringify({ children })
+    });
+    if (!res.ok) throw new Error(`Notion error: ${res.status}`);
+    return await res.json();
+  };
+
+  const createDailyLog = async () => {
+    if (!phase1Summary) return;
+    setLoading(prev => ({ ...prev, notion: true }));
+    setStatusMsg("Creating daily log in Notion...");
+    try {
+      const selectedItems = actionItems.filter((_, i) => checkedActions[i] !== false);
+      const todayItems = selectedItems.filter(i => i.group === "today").map(i => `- [ ] ${i.text}`).join("\n");
+      const weekItems = selectedItems.filter(i => i.group === "this_week").map(i => `- [ ] ${i.text}`).join("\n");
+      const standingItems = selectedItems.filter(i => i.group === "standing").map(i => `- [ ] ${i.text}`).join("\n");
+
+      const keyDirective = phase1Summary.match(/Key Directive[:\s]*\n?(.*?)(?:\n\n|\n-|\n\*\*)/s)?.[1]?.trim() || "Daily Tasks";
+      const shortDirective = keyDirective.replace(/^[-•]\s*/, "").substring(0, 40);
+      const pageTitle = `${ddmmm} - ${shortDirective}`;
+
+      const content = `## Morning Update\n${phase1Summary}\n\n## Action Items — Today\n${todayItems || "- [ ] No urgent items"}\n\n## Action Items — This Week\n${weekItems || "- [ ] No deadline items"}\n\n## Standing Deliverables\n${standingItems || "- [ ] No standing items"}`;
+
+      const page = await createNotionPage(pageTitle, content);
+      if (page) {
+        setDailyLogPageId(page.id);
+        setDailyLogUrl(page.url);
+        setStatusMsg("✓ Daily log created in Notion!");
+      }
+    } catch (e) { setStatusMsg("❌ " + e.message); }
+    setLoading(prev => ({ ...prev, notion: false }));
+  };
+
+  const appendEOD = async () => {
+    if (!phase6Summary || !dailyLogPageId) return;
+    setLoading(prev => ({ ...prev, eod: true }));
+    setStatusMsg("Appending EOD to daily log...");
+    try {
+      const content = `## End of Day Update\n${phase6Summary}`;
+      await appendToNotionPage(dailyLogPageId, content);
+      setEodAppended(true);
+      setStatusMsg("✓ EOD appended to daily log!");
+    } catch (e) { setStatusMsg("❌ " + e.message); }
+    setLoading(prev => ({ ...prev, eod: false }));
+  };
+
+  const resetDay = () => {
+    if (!window.confirm("Reset all progress for today?")) return;
+    setCompletedSteps({}); setPhase1Notes(""); setPhase1Summary(""); setPhase6Notes(""); setPhase6Summary("");
+    setActionItems([]); setCheckedActions({}); setDailyLogUrl(null); setDailyLogPageId(null);
+    setEodAppended(false); setStatusMsg(""); setRitualSteps({});
+    localStorage.removeItem("ea_steps_" + new Date().toDateString());
+  };
+
+  const weeklyRitual = WEEKLY_RITUALS[dayOfWeek];
+  const noKey = !apiKey;
+
+  const s = {
+    root: { minHeight: "100vh", background: "linear-gradient(165deg, #1E1040 0%, #2D1B69 30%, #1a0f3d 100%)", color: "#E8E0F5", position: "relative" },
+    container: { maxWidth: 720, margin: "0 auto", padding: "20px 16px 40px", position: "relative", zIndex: 1 },
+    header: { textAlign: "center", marginBottom: 24, position: "relative", paddingBottom: 16 },
+    title: { fontSize: 28, fontWeight: 800, background: "linear-gradient(135deg, #C4B5FD, #F9A8D4)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", letterSpacing: "-0.5px", margin: 0 },
+    date: { fontSize: 13, color: "#A78BFA", marginTop: 4, fontWeight: 500, letterSpacing: "0.5px" },
+    settingsBtn: { position: "absolute", left: 0, top: 4, background: "rgba(124,58,237,0.2)", border: "none", borderRadius: 10, padding: "8px 12px", color: "#A78BFA", fontSize: 16, cursor: "pointer" },
+    progressRing: { position: "absolute", right: 0, top: 4, display: "flex", flexDirection: "column", alignItems: "center" },
+    progressLabel: { fontSize: 11, color: "#A78BFA", marginTop: 2, fontWeight: 600 },
+    tabs: { display: "flex", gap: 4, marginBottom: 20, background: "rgba(124,58,237,0.1)", borderRadius: 14, padding: 4 },
+    tab: (a) => ({ flex: 1, padding: "10px 0", borderRadius: 11, border: "none", background: a ? "rgba(124,58,237,0.35)" : "transparent", color: a ? "#E8E0F5" : "#8B7DAF", fontSize: 13, fontWeight: 600, cursor: "pointer", transition: "all 0.2s", backdropFilter: a ? "blur(8px)" : "none" }),
+    card: { background: "rgba(255,255,255,0.05)", borderRadius: 16, padding: 16, marginBottom: 12, border: "1px solid rgba(124,58,237,0.15)", backdropFilter: "blur(10px)", animation: "fadeIn 0.3s ease" },
+    cardActive: { background: "rgba(124,58,237,0.12)", border: "1px solid rgba(124,58,237,0.35)" },
+    phaseHeader: { display: "flex", alignItems: "center", gap: 12, cursor: "pointer", userSelect: "none" },
+    phaseDot: (c, cur) => ({ width: 10, height: 10, borderRadius: "50%", background: c, boxShadow: cur ? `0 0 12px ${c}` : "none", flexShrink: 0 }),
+    stepRow: { display: "flex", alignItems: "center", gap: 10, padding: "7px 0", cursor: "pointer" },
+    cb: (ch) => ({ width: 18, height: 18, borderRadius: 5, border: ch ? "none" : "2px solid rgba(167,139,250,0.4)", background: ch ? "linear-gradient(135deg, #7C3AED, #A855F7)" : "transparent", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, transition: "all 0.2s", fontSize: 11, color: "#fff" }),
+    stepTxt: (ch) => ({ fontSize: 13, color: ch ? "#8B7DAF" : "#D4C8EF", textDecoration: ch ? "line-through" : "none", transition: "all 0.2s" }),
+    textarea: { width: "100%", minHeight: 140, background: "rgba(0,0,0,0.25)", border: "1px solid rgba(124,58,237,0.25)", borderRadius: 12, padding: 14, color: "#E8E0F5", fontSize: 13, fontFamily: "'DM Sans', sans-serif", resize: "vertical", outline: "none", lineHeight: 1.6, boxSizing: "border-box" },
+    btn: (v = "primary", dis = false) => ({ padding: "10px 20px", borderRadius: 10, border: "none", background: dis ? "rgba(124,58,237,0.2)" : v === "primary" ? "linear-gradient(135deg, #7C3AED, #9333EA)" : v === "notion" ? "linear-gradient(135deg, #1a1a1a, #333)" : "rgba(124,58,237,0.2)", color: dis ? "#6B5F8A" : "#fff", fontSize: 13, fontWeight: 700, cursor: dis ? "not-allowed" : "pointer", display: "flex", alignItems: "center", gap: 6 }),
+    output: { background: "rgba(0,0,0,0.3)", borderRadius: 12, padding: 16, fontSize: 13, lineHeight: 1.7, color: "#D4C8EF", whiteSpace: "pre-wrap", border: "1px solid rgba(124,58,237,0.15)", maxHeight: 400, overflowY: "auto" },
+    badge: (t) => ({ display: "inline-block", padding: "2px 8px", borderRadius: 6, fontSize: 10, fontWeight: 700, background: t === "today" ? "rgba(239,68,68,0.2)" : t === "this_week" ? "rgba(234,179,8,0.2)" : "rgba(34,197,94,0.2)", color: t === "today" ? "#FCA5A5" : t === "this_week" ? "#FDE68A" : "#86EFAC" }),
+    status: { padding: "8px 14px", borderRadius: 8, background: "rgba(124,58,237,0.15)", fontSize: 12, color: "#C4B5FD", fontWeight: 500, textAlign: "center", marginTop: 8 },
+    ritualCard: { background: "linear-gradient(135deg, rgba(234,179,8,0.1), rgba(124,58,237,0.1))", border: "1px solid rgba(234,179,8,0.25)", borderRadius: 14, padding: 14, marginBottom: 16 },
+    spinner: { display: "inline-block", width: 14, height: 14, border: "2px solid rgba(255,255,255,0.2)", borderTopColor: "#C4B5FD", borderRadius: "50%", animation: "spin 0.6s linear infinite" },
+    currentBadge: { display: "inline-flex", alignItems: "center", padding: "2px 8px", borderRadius: 6, fontSize: 10, fontWeight: 700, background: "rgba(124,58,237,0.3)", color: "#C4B5FD", letterSpacing: "0.5px" }
+  };
+
+  return (
+    <div style={s.root}>
+      <SettingsModal show={showSettings} onClose={() => setShowSettings(false)} apiKey={apiKey} setApiKey={setApiKey} notionToken={notionToken} setNotionToken={setNotionToken} notionParent={notionParent} setNotionParent={setNotionParent} />
+      <div style={s.container}>
+        <div style={s.header}>
+          <button style={s.settingsBtn} onClick={() => setShowSettings(true)}>⚙️</button>
+          <h1 style={s.title}>EA Command Center</h1>
+          <p style={s.date}>{dateStr}</p>
+          <div style={s.progressRing}>
+            <div style={{ position: "relative", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <CircularProgress value={overallProgress} size={52} stroke={4} />
+              <span style={{ position: "absolute", fontSize: 12, fontWeight: 800, color: "#C4B5FD" }}>{overallProgress}%</span>
+            </div>
+            <span style={s.progressLabel}>DAY</span>
+          </div>
+          <CloudDecor />
+        </div>
+
+        {noKey && (
+          <div style={{ ...s.card, background: "rgba(234,179,8,0.1)", border: "1px solid rgba(234,179,8,0.3)", textAlign: "center", cursor: "pointer" }} onClick={() => setShowSettings(true)}>
+            <span style={{ fontSize: 13, color: "#FDE68A" }}>⚠️ Tap ⚙️ Settings to add your API keys to get started</span>
+          </div>
+        )}
+
+        <div style={s.tabs}>
+          {[{ id: "tracker", label: "📊 Tracker" }, { id: "phase1", label: "🌅 Phase 1" }, { id: "phase6", label: "🌙 Phase 6" }].map(t =>
+            <button key={t.id} style={s.tab(activeTab === t.id)} onClick={() => setActiveTab(t.id)}>{t.label}</button>
+          )}
+        </div>
+
+        {activeTab === "tracker" && (
+          <div>
+            {weeklyRitual && (
+              <div style={s.ritualCard}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#FDE68A", marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>📋 {weeklyRitual.name} <span style={{ fontSize: 11, color: "#A78BFA", fontWeight: 500 }}>({weeklyRitual.time})</span></div>
+                {weeklyRitual.steps.map((step, i) => (
+                  <div key={i} style={s.stepRow} onClick={() => setRitualSteps(p => ({ ...p, [`r-${i}`]: !p[`r-${i}`] }))}>
+                    <div style={s.cb(!!ritualSteps[`r-${i}`])}>{ritualSteps[`r-${i}`] ? "✓" : ""}</div>
+                    <span style={s.stepTxt(!!ritualSteps[`r-${i}`])}>{step}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            {PHASES.map((phase, idx) => {
+              const isCur = idx === currentPhaseIdx, isExp = expandedPhase === phase.id, prog = phaseProgress(phase);
+              return (
+                <div key={phase.id} style={{ ...s.card, ...(isCur ? s.cardActive : {}) }}>
+                  <div style={s.phaseHeader} onClick={() => setExpandedPhase(isExp ? null : phase.id)}>
+                    <div style={s.phaseDot(phase.color, isCur)} />
+                    <div style={{ flex: 1 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <span style={{ fontSize: 11, fontWeight: 700, color: "#A78BFA", textTransform: "uppercase", letterSpacing: "1px" }}>{phase.label}</span>
+                        {isCur && <span style={s.currentBadge}>● NOW</span>}
+                      </div>
+                      <div style={{ fontSize: 15, fontWeight: 600, color: "#E8E0F5" }}>{phase.name}</div>
+                    </div>
+                    <span style={{ fontSize: 12, color: "#8B7DAF", marginLeft: "auto", fontVariantNumeric: "tabular-nums" }}>{phase.time}</span>
+                    <div style={{ position: "relative", width: 36, height: 36, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      <CircularProgress value={prog} size={36} stroke={3} color={phase.color} />
+                      <span style={{ position: "absolute", fontSize: 9, fontWeight: 700, color: "#A78BFA" }}>{prog}%</span>
+                    </div>
+                    <span style={{ fontSize: 16, color: "#8B7DAF", transform: isExp ? "rotate(180deg)" : "none", transition: "transform 0.2s" }}>▾</span>
+                  </div>
+                  {isExp && (
+                    <div style={{ marginTop: 12, paddingLeft: 22, borderLeft: `2px solid ${phase.color}30` }}>
+                      {phase.steps.map((step, i) => {
+                        const key = `${phase.id}-${i}`, checked = !!completedSteps[key];
+                        return (
+                          <div key={i} style={s.stepRow} onClick={() => toggleStep(phase.id, i)}>
+                            <div style={s.cb(checked)}>{checked ? "✓" : ""}</div>
+                            <span style={s.stepTxt(checked)}>{step}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+            <button onClick={resetDay} style={{ ...s.btn("ghost"), width: "100%", marginTop: 8, justifyContent: "center", background: "rgba(239,68,68,0.1)", color: "#FCA5A5" }}>🔄 Reset Day</button>
+          </div>
+        )}
+
+        {activeTab === "phase1" && (
+          <div>
+            <div style={s.card}>
+              <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 4, color: "#C4B5FD" }}>🌅 Phase 1 — Morning Notes</div>
+              <p style={{ fontSize: 12, color: "#8B7DAF", margin: "0 0 12px 0" }}>Paste your raw WhatsApp messages, voice note transcripts, and system scan notes below.</p>
+              <textarea style={s.textarea} value={phase1Notes} onChange={e => setPhase1Notes(e.target.value)} placeholder="Paste raw morning notes here..." />
+              <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+                <button style={s.btn("primary", !phase1Notes.trim() || loading.phase1)} onClick={() => handleSummarize("phase1")} disabled={!phase1Notes.trim() || loading.phase1}>
+                  {loading.phase1 ? <><span style={s.spinner} /> Summarizing...</> : "✨ Summarize"}
+                </button>
+              </div>
+            </div>
+            {phase1Summary && (
+              <div style={s.card}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                  <span style={{ fontSize: 15, fontWeight: 700, color: "#C4B5FD" }}>📋 Phase 1 Update</span>
+                  <CopyBtn text={phase1Summary} />
+                </div>
+                <div style={s.output}>{phase1Summary}</div>
+              </div>
+            )}
+            {loading.actions && <div style={{ ...s.card, textAlign: "center", color: "#A78BFA" }}><span style={s.spinner} /> Extracting action items...</div>}
+            {actionItems.length > 0 && (
+              <div style={s.card}>
+                <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 12, color: "#C4B5FD" }}>☑️ Action Items</div>
+                {["today", "this_week", "standing"].map(group => {
+                  const items = actionItems.map((item, i) => ({ ...item, idx: i })).filter(i => i.group === group);
+                  if (!items.length) return null;
+                  const label = group === "today" ? "Today — Urgent" : group === "this_week" ? "This Week — Deadlines" : "Standing Deliverables";
+                  return (
+                    <div key={group} style={{ marginBottom: 14 }}>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: "#A78BFA", textTransform: "uppercase", letterSpacing: "0.8px", marginBottom: 6 }}>{label}</div>
+                      {items.map(item => (
+                        <div key={item.idx} style={s.stepRow} onClick={() => setCheckedActions(p => ({ ...p, [item.idx]: p[item.idx] === false ? true : p[item.idx] === true ? false : false }))}>
+                          <div style={s.cb(checkedActions[item.idx] !== false)}>{checkedActions[item.idx] !== false ? "✓" : ""}</div>
+                          <span style={{ fontSize: 13, color: "#D4C8EF", flex: 1 }}>{item.text}</span>
+                          <span style={s.badge(group)}>{group === "today" ? "URGENT" : group === "this_week" ? "THIS WEEK" : "DAILY"}</span>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })}
+                <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+                  <button style={s.btn("notion", loading.notion || !!dailyLogUrl)} onClick={createDailyLog} disabled={loading.notion || !!dailyLogUrl}>
+                    {loading.notion ? <><span style={s.spinner} /> Creating...</> : dailyLogUrl ? "✓ Log Created" : "📓 Create Daily Log in Notion"}
+                  </button>
+                </div>
+                {dailyLogUrl && <a href={dailyLogUrl} target="_blank" rel="noopener noreferrer" style={{ fontSize: 12, color: "#A78BFA", marginTop: 8, display: "inline-block", textDecoration: "underline" }}>Open in Notion →</a>}
+                {statusMsg && <div style={s.status}>{statusMsg}</div>}
+              </div>
+            )}
+          </div>
+        )}
+
+        {activeTab === "phase6" && (
+          <div>
+            <div style={s.card}>
+              <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 4, color: "#C4B5FD" }}>🌙 Phase 6 — End of Day Notes</div>
+              <p style={{ fontSize: 12, color: "#8B7DAF", margin: "0 0 12px 0" }}>Paste your raw end-of-day notes — completed tasks, blockers, tomorrow's plan.</p>
+              <textarea style={s.textarea} value={phase6Notes} onChange={e => setPhase6Notes(e.target.value)} placeholder="Paste raw end-of-day notes here..." />
+              <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+                <button style={s.btn("primary", !phase6Notes.trim() || loading.phase6)} onClick={() => handleSummarize("phase6")} disabled={!phase6Notes.trim() || loading.phase6}>
+                  {loading.phase6 ? <><span style={s.spinner} /> Summarizing...</> : "✨ Summarize"}
+                </button>
+              </div>
+            </div>
+            {phase6Summary && (
+              <div style={s.card}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                  <span style={{ fontSize: 15, fontWeight: 700, color: "#C4B5FD" }}>📋 End of Day Update</span>
+                  <CopyBtn text={phase6Summary} />
+                </div>
+                <div style={s.output}>{phase6Summary}</div>
+                <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+                  <CopyBtn text={phase6Summary} />
+                  {dailyLogPageId && (
+                    <button style={s.btn("notion", loading.eod || eodAppended)} onClick={appendEOD} disabled={loading.eod || eodAppended}>
+                      {loading.eod ? <><span style={s.spinner} /> Appending...</> : eodAppended ? "✓ EOD Appended" : "📓 Append to Daily Log"}
+                    </button>
+                  )}
+                </div>
+                {!dailyLogPageId && <p style={{ fontSize: 12, color: "#8B7DAF", marginTop: 8, fontStyle: "italic" }}>Create a daily log in Phase 1 first to enable the append button.</p>}
+                {statusMsg && <div style={s.status}>{statusMsg}</div>}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
